@@ -14,7 +14,8 @@ A self-hosted server that maintains a central library of photos and videos for a
 - The server organizes stored files into a folder structure based on the date the media was taken.
 - The server analyzes photos (initially: face detection) and tags them. Tags are readable by clients.
 
-The project is also a learning vehicle for modern Python. Performance is explicitly **not** a priority; clarity, correctness and portability are.
+The project is also a learning vehicle for modern Python. Performance is explicitly **not** a priority; clarity,
+correctness and portability are.
 
 ## 2. Goals and non-goals
 
@@ -38,19 +39,20 @@ The project is also a learning vehicle for modern Python. Performance is explici
 
 ## 3. Key decisions (summary)
 
-| # | Decision | Rationale |
-|---|---|---|
-| D1 | Modular monolith with layered structure (API → services → persistence/storage) | Simple to run and learn; layers can be split out later |
-| D2 | File identity = SHA-256 of content | Independent of file names, paths and copy dates |
-| D3 | Data ownership is per **user**; dedup key is `(user_id, sha256)` | A user with several devices sees one library |
-| D4 | Devices authenticate with their own API keys bound to a user | Revoking one device does not affect others |
-| D5 | Photos and videos share one model (`media_items` with `media_type`) | Check/upload/organize are identical; only analysis differs |
-| D6 | Chunked, resumable upload protocol used for all media | Large videos, unreliable connections, one code path |
-| D7 | Background work via a DB-backed job table + worker | No external broker (Redis/Celery) needed; Celery does not support Windows |
-| D8 | Tags as a generic many-to-many model with `source` and `confidence` | New tag types without schema changes |
-| D9 | Application is a plain console process; OS service wrapping is external | No Windows-specific code; WinSW/NSSM on Windows, systemd on Linux |
-| D10 | Store relative paths only; use `pathlib` everywhere | Portability between Windows and Linux |
-| D11 | Files deleted directly from storage have no effect on the app (for now) | Keeps stage 1 simple; reconciliation comes later |
+| #   | Decision                                                                       | Rationale                                                                                                                                                               |
+|-----|--------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| D1  | Modular monolith with layered structure (API → services → persistence/storage) | Simple to run and learn; layers can be split out later                                                                                                                  |
+| D2  | File identity = SHA-256 of content                                             | Independent of file names, paths and copy dates                                                                                                                         |
+| D3  | Data ownership is per **user**; dedup key is `(user_id, sha256)`               | A user with several devices sees one library                                                                                                                            |
+| D4  | Devices authenticate with their own API keys bound to a user                   | Revoking one device does not affect others                                                                                                                              |
+| D5  | Photos and videos share one model (`media_items` with `media_type`)            | Check/upload/organize are identical; only analysis differs                                                                                                              |
+| D6  | Chunked, resumable upload protocol used for all media                          | Large videos, unreliable connections, one code path                                                                                                                     |
+| D7  | Background work via a DB-backed job table + worker                             | No external broker (Redis/Celery) needed; Celery does not support Windows                                                                                               |
+| D8  | Tags as a generic many-to-many model with `source` and `confidence`            | New tag types without schema changes                                                                                                                                    |
+| D9  | Application is a plain console process; OS service wrapping is external        | No Windows-specific code; WinSW/NSSM on Windows, systemd on Linux                                                                                                       |
+| D10 | Store relative paths only; use `pathlib` everywhere                            | Portability between Windows and Linux                                                                                                                                   |
+| D11 | Files deleted directly from storage have no effect on the app (for now)        | Keeps stage 1 simple; reconciliation comes later                                                                                                                        |
+| D12 | PostgreSQL from the start (Docker container in development); no SQLite         | Avoids SQLite pitfalls (foreign keys off by default, no time zones, limited `ALTER TABLE`, file-level write locks with API + worker); same database as the Linux target |
 
 ## 4. Architecture overview
 
@@ -77,12 +79,14 @@ The project is also a learning vehicle for modern Python. Performance is explici
                                               └────────────────────┘
 ```
 
-**Rule:** the service layer knows nothing about HTTP, the CLI, or the operating system. API endpoints, CLI commands and worker handlers are thin adapters calling services.
+**Rule:** the service layer knows nothing about HTTP, the CLI, or the operating system. API endpoints, CLI commands and
+worker handlers are thin adapters calling services.
 
 ## 5. Domain model
 
 - **User** – a person; owns all media. Identified internally by a stable id and a stable `username`.
-- **Device** – a client installation (laptop, phone, …) belonging to one user. Holds one API key. Can be revoked independently.
+- **Device** – a client installation (laptop, phone, …) belonging to one user. Holds one API key. Can be revoked
+  independently.
 - **Media item** – one stored file (photo or video) belonging to one user. Records which device uploaded it.
 - **Upload session** – state of an in-progress chunked upload.
 - **Tag** – a label (e.g. `face`, `no_face`) attached to media items with a source and confidence.
@@ -91,7 +95,8 @@ The project is also a learning vehicle for modern Python. Performance is explici
 ## 6. File identity and deduplication
 
 - The client computes **SHA-256** of each file's content (streamed, never loaded fully into memory).
-- The server treats `(user_id, sha256)` as unique. The same file owned by two users is stored twice (physical copies; no shared blob store in stage 1).
+- The server treats `(user_id, sha256)` as unique. The same file owned by two users is stored twice (physical copies; no
+  shared blob store in stage 1).
 - The server re-computes the hash after upload and rejects the upload if it does not match.
 - Future: perceptual hashes (e.g. `imagehash`) to detect re-encoded/resized duplicates.
 
@@ -142,35 +147,42 @@ Server-side rules:
 
 - `<user_key>` is derived from an immutable value (user id or the stable `username`), never from a display name.
 - `<YYYY>/<MM>` comes from the media's `taken_at` (see §9).
-- Stored file names are generated by the server (e.g. `YYYYMMDD_HHMMSS_<sha8>.<ext>`). Client file names are kept only in the DB as `original_name` and are never used directly as paths.
+- Stored file names are generated by the server (e.g. `YYYYMMDD_HHMMSS_<sha8>.<ext>`). Client file names are kept only
+  in the DB as `original_name` and are never used directly as paths.
 - The DB stores `rel_path` relative to `storage_root`. Absolute paths are never persisted.
 - Moves within the same filesystem use atomic rename; across filesystems copy-then-delete.
 
 ## 9. Metadata extraction
 
-| Media | Source of `taken_at` | Tool |
-|---|---|---|
-| Photo | EXIF `DateTimeOriginal` | Pillow (+ `pillow-heif` for HEIC) |
-| Video | Container metadata (`creation_time` in MP4/MOV) | `ffprobe` (FFmpeg) via `subprocess`, JSON output |
-| Fallback | File modification time sent by client (`file_mtime`), else upload time | – |
+| Media    | Source of `taken_at`                                                   | Tool                                             |
+|----------|------------------------------------------------------------------------|--------------------------------------------------|
+| Photo    | EXIF `DateTimeOriginal`                                                | Pillow (+ `pillow-heif` for HEIC)                |
+| Video    | Container metadata (`creation_time` in MP4/MOV)                        | `ffprobe` (FFmpeg) via `subprocess`, JSON output |
+| Fallback | File modification time sent by client (`file_mtime`), else upload time | –                                                |
 
-`taken_at_source` records which source was used (`exif`, `container`, `mtime`, `upload`) so uncertain dates can be found later.
+`taken_at_source` records which source was used (`exif`, `container`, `mtime`, `upload`) so uncertain dates can be found
+later.
 
 ## 10. Background processing
 
-- Table `jobs` with `job_type`, optional `media_id`, `status` (`pending`, `running`, `done`, `failed`), `attempts`, `last_error`, `run_after`.
-- A worker polls for pending jobs, claims one, runs the registered handler, and records the result. Failed jobs are retried with backoff up to a limit.
-- Handlers are registered in a registry: `job_type → handler function`. Adding video analysis or reconciliation means adding a handler.
+- Table `jobs` with `job_type`, optional `media_id`, `status` (`pending`, `running`, `done`, `failed`), `attempts`,
+  `last_error`, `run_after`.
+- A worker polls for pending jobs, claims one, runs the registered handler, and records the result. Failed jobs are
+  retried with backoff up to a limit.
+- Handlers are registered in a registry: `job_type → handler function`. Adding video analysis or reconciliation means
+  adding a handler.
 - Stage 1 job types: `detect_faces` (photos only). Videos get `analysis_status = skipped`.
 - Periodic tasks (upload cleanup; later reconciliation) are scheduled with a simple loop or APScheduler.
-- Initially the worker may run inside the API process as a background task; it can be split into a separate process/service without code changes to handlers.
+- Initially the worker may run inside the API process as a background task; it can be split into a separate
+  process/service without code changes to handlers.
 
 ## 11. Analysis: face detection
 
 - Model: **OpenCV YuNet** (`cv2.FaceDetectorYN`), a small ONNX model, CPU-only, works on Windows and Linux.
 - Output: number of detected faces with confidence. Stage 1 tags: `face` (≥1 face above threshold) or `no_face`.
 - Threshold is configurable.
-- Model files are versioned and their location configured; the model name/version is recorded as the tag `source` (e.g. `yunet-2023mar`).
+- Model files are versioned and their location configured; the model name/version is recorded as the tag `source` (e.g.
+  `yunet-2023mar`).
 - Future: InsightFace embeddings for recognizing specific people; video analysis by sampling frames with FFmpeg.
 
 ## 12. Tags
@@ -184,7 +196,8 @@ Server-side rules:
 
 Files may be deleted or changed directly on the storage; in stage 1 the app does not react to this.
 
-Consequence (accepted): if a file is removed from storage, `/media/check` still reports it as present, so clients will not re-upload it.
+Consequence (accepted): if a file is removed from storage, `/media/check` still reports it as present, so clients will
+not re-upload it.
 
 Planned reconciliation worker:
 
@@ -199,23 +212,25 @@ All data needed for this (`rel_path`, `size`, `sha256`, `file_mtime`) is stored 
 
 All endpoints are under `/api/v1`, require `Authorization: Bearer <api_key>`, and are scoped to the authenticated user.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/media/check` | Body: list of `{sha256, size}` (batch, e.g. ≤ 1000). Returns which are known (with media id and tags) and which are missing |
-| POST/PUT/GET/DELETE | `/uploads…` | Chunked upload, see §7 |
-| GET | `/media` | List user's media; filters: `tag`, `media_type`, date range; paginated |
-| GET | `/media/{id}` | Media details incl. tags |
-| GET | `/media/{id}/tags` | Tags of one item |
-| GET | `/tags` | All known tags |
-| GET | `/me` | Current user and device info |
-| GET | `/health` | Liveness (no auth) |
+| Method              | Path               | Purpose                                                                                                                     |
+|---------------------|--------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| POST                | `/media/check`     | Body: list of `{sha256, size}` (batch, e.g. ≤ 1000). Returns which are known (with media id and tags) and which are missing |
+| POST/PUT/GET/DELETE | `/uploads…`        | Chunked upload, see §7                                                                                                      |
+| GET                 | `/media`           | List user's media; filters: `tag`, `media_type`, date range; paginated                                                      |
+| GET                 | `/media/{id}`      | Media details incl. tags                                                                                                    |
+| GET                 | `/media/{id}/tags` | Tags of one item                                                                                                            |
+| GET                 | `/tags`            | All known tags                                                                                                              |
+| GET                 | `/me`              | Current user and device info                                                                                                |
+| GET                 | `/health`          | Liveness (no auth)                                                                                                          |
 
 The OpenAPI schema generated by FastAPI is the contract for the client application.
 
 ## 15. Security
 
-- **API keys**: generated with `secrets.token_urlsafe(32)` with a recognizable prefix (e.g. `pk_`). Shown once at creation. The DB stores only `key_prefix` and `key_hash` (SHA-256; sufficient for high-entropy random tokens).
-- Authentication dependency resolves key → device → user, rejects revoked devices and inactive users, updates `last_seen_at`.
+- **API keys**: generated with `secrets.token_urlsafe(32)` with a recognizable prefix (e.g. `pk_`). Shown once at
+  creation. The DB stores only `key_prefix` and `key_hash` (SHA-256; sufficient for high-entropy random tokens).
+- Authentication dependency resolves key → device → user, rejects revoked devices and inactive users, updates
+  `last_seen_at`.
 - Every query is filtered by the authenticated user; no endpoint accepts a `user_id` from the client.
 - Uploads: size limit, content verification, server-generated file names, paths never derived from client input.
 - Transport: HTTPS required outside a trusted LAN, via a reverse proxy (e.g. Caddy) in front of the app.
@@ -280,8 +295,13 @@ Future: device pairing with a one-time code.
 
 ## 18. Configuration and logging
 
-- Configuration via **pydantic-settings**: environment variables and an optional `.env` file. No OS-specific config sources.
-- Key settings: `STORAGE_ROOT`, `DATABASE_URL`, `MAX_UPLOAD_SIZE`, `UPLOAD_CHUNK_SIZE`, `UPLOAD_SESSION_TTL`, `FACE_DETECTION_THRESHOLD`, `MODEL_DIR`, `FFPROBE_PATH`, `LOG_LEVEL`, `HOST`, `PORT`.
+- Configuration via **pydantic-settings**: environment variables and an optional `.env` file. No OS-specific config
+  sources.
+- Key settings (`STORAGE_ROOT` and `DATABASE_URL` are required, no defaults): `STORAGE_ROOT`, `DATABASE_URL`,
+  `MAX_UPLOAD_SIZE`, `UPLOAD_CHUNK_SIZE`, `UPLOAD_SESSION_TTL`, `FACE_DETECTION_THRESHOLD`, `MODEL_DIR`, `FFPROBE_PATH`,
+  `LOG_LEVEL`, `HOST`, `PORT`.
+- `.env` is never committed; `.env.example` documents the keys. Secrets (database password) are never printed by the CLI
+  or logged.
 - Logging with the standard `logging` module to stdout (service wrappers and systemd capture it); optional file handler.
 
 ## 19. Deployment and portability
@@ -290,38 +310,43 @@ Future: device pairing with a one-time code.
 - **Windows (stage 1):** wrapped as a service with WinSW or NSSM.
 - **Linux (target):** systemd unit file; optionally a Docker image.
 - Portability rules:
-  - `pathlib` for all path handling; only relative paths in the DB.
-  - Linux filesystems are case-sensitive; generated file names avoid case-only differences.
-  - External tools (`ffprobe`) are located via configuration, not hard-coded paths.
-- Database: SQLite for stage 1; PostgreSQL is the expected target when moving to Linux (SQLAlchemy + Alembic keep this a configuration change).
+    - `pathlib` for all path handling; only relative paths in the DB.
+    - Linux filesystems are case-sensitive; generated file names avoid case-only differences.
+    - External tools (`ffprobe`) are located via configuration, not hard-coded paths.
+- Database: PostgreSQL from stage 1. In development and on Windows it runs in a Docker container defined in
+  `compose.yaml` (named volume for data, port bound to localhost). On Linux it may run natively or in the same container
+  setup.
+- Database schema is created only by Alembic migrations, never by `create_all()` in the application.
 
 ## 20. Technology stack
 
-| Area | Choice | Notes |
-|---|---|---|
-| Language | Python 3.15 (3.14 fallback) | 3.15.0 released Oct 2026; verify binary wheels for OpenCV/onnxruntime before committing |
-| Project & dependency management | uv | `pyproject.toml`, lock file, Python version management |
-| Web framework | FastAPI + Uvicorn | Pin exact version (FastAPI is still 0.x) |
-| Validation / settings | Pydantic v2, pydantic-settings | |
-| ORM / migrations | SQLAlchemy 2.x, Alembic | |
-| Database | SQLite → PostgreSQL | |
-| Images | Pillow, pillow-heif | EXIF, HEIC |
-| Video metadata | FFmpeg / ffprobe | External binary |
-| Face detection | OpenCV (YuNet) | |
-| Scheduling | APScheduler or simple loop | |
-| CLI | Typer | |
-| Quality | ruff, mypy, pytest, pre-commit | |
-| IDE | IntelliJ IDEA Ultimate + Python plugin | FastAPI support, Database Tools, HTTP Client |
-| Service wrapper | WinSW / NSSM (Windows), systemd (Linux) | |
+| Area                            | Choice                                  | Notes                                                                                   |
+|---------------------------------|-----------------------------------------|-----------------------------------------------------------------------------------------|
+| Language                        | Python 3.15 (3.14 fallback)             | 3.15.0 released Oct 2026; verify binary wheels for OpenCV/onnxruntime before committing |
+| Project & dependency management | uv                                      | `pyproject.toml`, lock file, Python version management                                  |
+| Web framework                   | FastAPI + Uvicorn                       | Pin exact version (FastAPI is still 0.x)                                                |
+| Validation / settings           | Pydantic v2, pydantic-settings          |                                                                                         |
+| ORM / migrations                | SQLAlchemy 2.x, Alembic                 |                                                                                         |
+| Database                        | PostgreSQL (Docker)                     | Driver: psycopg 3 (`psycopg[binary]`), URL scheme `postgresql+psycopg://`               |
+| Images                          | Pillow, pillow-heif                     | EXIF, HEIC                                                                              |
+| Video metadata                  | FFmpeg / ffprobe                        | External binary                                                                         |
+| Face detection                  | OpenCV (YuNet)                          |                                                                                         |
+| Scheduling                      | APScheduler or simple loop              |                                                                                         |
+| CLI                             | Typer                                   |                                                                                         |
+| Quality                         | ruff, mypy, pytest, pre-commit          |                                                                                         |
+| Integration tests               | testcontainers-python                   | Disposable PostgreSQL container per test run; requires Docker                           |
+| IDE                             | IntelliJ IDEA Ultimate + Python plugin  | FastAPI support, Database Tools, HTTP Client                                            |
+| Service wrapper                 | WinSW / NSSM (Windows), systemd (Linux) |                                                                                         |
 
 ## 21. Roadmap
 
-1. Project skeleton: uv project, settings, logging, DB models, first Alembic migration, CLI for users/devices.
+1. Project skeleton: uv project, settings, logging, PostgreSQL in Docker, DB models, first Alembic migration, CLI for
+   users/devices.
 2. Authentication and `/media/check`.
 3. Chunked upload, metadata extraction, organization.
 4. Job table, worker, face detection, tags endpoints.
 5. Packaging as a Windows service.
-6. Later: reconciliation worker, video analysis, PostgreSQL + Linux migration, device pairing, face recognition.
+6. Later: reconciliation worker, video analysis, Linux migration, device pairing, face recognition.
 
 ## 22. Open questions
 

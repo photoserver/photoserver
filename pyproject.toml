@@ -13,6 +13,7 @@ dependencies = [
     "opencv-python-headless>=5.0.0.93",
     "pillow>=13.0.0",
     "pillow-heif>=1.8.1",
+    "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.16.1",
     "sqlalchemy>=2.1.6",
     "typer>=0.27.3",
