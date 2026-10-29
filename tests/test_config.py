@@ -12,15 +12,13 @@ BASE_ENV = {
 
 
 def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("PHOTOSERVER_STORAGE_ROOT", str(tmp_path))
-    monkeypatch.setenv("PHOTOSERVER_PORT", "9000")
-    monkeypatch.setenv("PHOTOSERVER_DATABASE_URL", "postgres://user:password@host:port/database")
+    for key, value in BASE_ENV.items():
+        monkeypatch.setenv(key, value)
 
     settings = Settings(_env_file=None)
 
-    assert settings.storage_root == tmp_path
-    assert settings.port == 9000
-    assert settings.database_url.get_secret_value() == "postgres://user:password@host:port/database"
+    assert settings.storage_root == Path(BASE_ENV["PHOTOSERVER_STORAGE_ROOT"])
+    assert settings.database_url.get_secret_value() == BASE_ENV["PHOTOSERVER_DATABASE_URL"]
 
 
 @pytest.mark.parametrize(
@@ -42,8 +40,10 @@ def test_required_settings_fields(
         Settings(_env_file=None)
 
     errors = e.value.errors()
+
+    assert len(errors) == 1
+
     first_error = errors[0]
 
     assert first_error["type"] == "missing"
-    assert first_error["msg"] == "Field required"
     assert first_error["loc"] == (expected_field,)

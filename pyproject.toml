@@ -45,3 +45,4 @@ testpaths = ["tests"]
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
+mypy_path = "src"
