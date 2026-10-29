@@ -11,7 +11,8 @@ BASE_ENV = {
 }
 
 
-def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTOSERVER_PORT", "9000")
     for key, value in BASE_ENV.items():
         monkeypatch.setenv(key, value)
 
@@ -19,6 +20,7 @@ def test_settings_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
     assert settings.storage_root == Path(BASE_ENV["PHOTOSERVER_STORAGE_ROOT"])
     assert settings.database_url.get_secret_value() == BASE_ENV["PHOTOSERVER_DATABASE_URL"]
+    assert settings.port == 9000
 
 
 @pytest.mark.parametrize(
